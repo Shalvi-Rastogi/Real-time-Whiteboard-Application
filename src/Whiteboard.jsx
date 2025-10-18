@@ -1,9 +1,11 @@
-// src/Whiteboard.jsx
 import React, { useEffect, useRef, useState } from "react";
 import { db } from "./firebase";
 import { ref, set, onValue } from "firebase/database";
+import Draggable from "react-draggable";
+import { ResizableBox } from "react-resizable";
+import "react-resizable/css/styles.css";
 
-export default function Whiteboard({ roomId, color, brushSize }) {
+export default function Whiteboard({ roomId, color = "#000", brushSize = 4 }) {
   const canvasRef = useRef(null);
   const ctxRef = useRef(null);
   const imageInputRef = useRef(null);
@@ -13,62 +15,14 @@ export default function Whiteboard({ roomId, color, brushSize }) {
   const [currentTool, setCurrentTool] = useState("pen");
   const [startPos, setStartPos] = useState(null);
   const [currentPoints, setCurrentPoints] = useState([]);
+  const [tempShape, setTempShape] = useState(null);
+
+  const [canvasImages, setCanvasImages] = useState([]);
   const [showTextInput, setShowTextInput] = useState(false);
   const [textPos, setTextPos] = useState({ x: 0, y: 0 });
   const [inputText, setInputText] = useState("");
 
-  // Undo/Redo stacks
-  const [undoStack, setUndoStack] = useState([]);
-  const [redoStack, setRedoStack] = useState([]);
-
-  // Draw a single line/tool
-  const drawLine = (ctx, line) => {
-    if (!ctx) return;
-    if (line.tool === "pen" || line.tool === "eraser") {
-      ctx.strokeStyle = line.color;
-      ctx.lineWidth = line.size;
-      ctx.beginPath();
-      const points = line.points;
-      if (points.length > 0) ctx.moveTo(points[0].x, points[0].y);
-      for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
-      ctx.stroke();
-    } else if (line.tool === "line") {
-      ctx.strokeStyle = line.color;
-      ctx.lineWidth = line.size;
-      ctx.beginPath();
-      ctx.moveTo(line.start.x, line.start.y);
-      ctx.lineTo(line.end.x, line.end.y);
-      ctx.stroke();
-    } else if (line.tool === "rectangle") {
-      ctx.strokeStyle = line.color;
-      ctx.lineWidth = line.size;
-      ctx.strokeRect(
-        line.start.x,
-        line.start.y,
-        line.end.x - line.start.x,
-        line.end.y - line.start.y
-      );
-    } else if (line.tool === "circle") {
-      ctx.strokeStyle = line.color;
-      ctx.lineWidth = line.size;
-      const radius = Math.sqrt(
-        Math.pow(line.end.x - line.start.x, 2) + Math.pow(line.end.y - line.start.y, 2)
-      );
-      ctx.beginPath();
-      ctx.arc(line.start.x, line.start.y, radius, 0, 2 * Math.PI);
-      ctx.stroke();
-    } else if (line.tool === "text") {
-      ctx.font = `${line.size * 5}px Arial`;
-      ctx.fillStyle = line.color;
-      ctx.fillText(line.text, line.start.x, line.start.y);
-    } else if (line.tool === "image") {
-      const img = new Image();
-      img.src = line.src;
-      img.onload = () => ctx.drawImage(img, line.x, line.y, line.width, line.height);
-    }
-  };
-
-  // Load lines/images from Firebase
+  // Load lines and images from Firebase
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
@@ -78,186 +32,191 @@ export default function Whiteboard({ roomId, color, brushSize }) {
 
     const unsubscribe = onValue(ref(db, `rooms/${roomId}/lines`), (snapshot) => {
       const data = snapshot.val() || {};
-      setLines(Object.values(data));
+      const allLines = Object.values(data);
+      const images = allLines.filter((l) => l.tool === "image");
+      const otherLines = allLines.filter((l) => l.tool !== "image");
+      setLines(otherLines);
+      setCanvasImages(images);
     });
 
     return () => unsubscribe();
   }, [roomId]);
 
-  // Redraw canvas whenever lines update
-  useEffect(() => {
+  // Draw everything
+  const drawAll = () => {
     const ctx = ctxRef.current;
+    if (!ctx) return;
     const canvas = canvasRef.current;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     lines.forEach((line) => drawLine(ctx, line));
-  }, [lines]);
+    if (tempShape) drawLine(ctx, tempShape);
+  };
+
+  useEffect(() => drawAll(), [lines, tempShape]);
 
   const getCursorPosition = (e) => {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    return { x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY };
+    return {
+      x: ((e.clientX - rect.left) * canvas.width) / rect.width,
+      y: ((e.clientY - rect.top) * canvas.height) / rect.height,
+    };
+  };
+
+  const drawLine = (ctx, line) => {
+    ctx.strokeStyle = line.color;
+    ctx.fillStyle = line.color;
+    ctx.lineWidth = line.size;
+
+    switch (line.tool) {
+      case "pen":
+      case "eraser":
+        ctx.beginPath();
+        if (line.points.length > 0) ctx.moveTo(line.points[0].x, line.points[0].y);
+        line.points.forEach((p) => ctx.lineTo(p.x, p.y));
+        ctx.stroke();
+        break;
+      case "line":
+        ctx.beginPath();
+        ctx.moveTo(line.start.x, line.start.y);
+        ctx.lineTo(line.end.x, line.end.y);
+        ctx.stroke();
+        break;
+      case "rectangle":
+        ctx.beginPath();
+        ctx.strokeRect(
+          line.start.x,
+          line.start.y,
+          line.end.x - line.start.x,
+          line.end.y - line.start.y
+        );
+        break;
+      case "circle":
+        const radius = Math.sqrt(
+          (line.end.x - line.start.x) ** 2 + (line.end.y - line.start.y) ** 2
+        );
+        ctx.beginPath();
+        ctx.arc(line.start.x, line.start.y, radius, 0, 2 * Math.PI);
+        ctx.stroke();
+        break;
+      case "text":
+        ctx.font = `${line.size * 5}px Arial`;
+        ctx.fillText(line.text, line.start.x, line.start.y);
+        break;
+      default:
+        break;
+    }
   };
 
   const startDrawing = (e) => {
-    const { x, y } = getCursorPosition(e);
-
+    const pos = getCursorPosition(e);
     if (currentTool === "text") {
-      setTextPos({ x, y });
+      setTextPos(pos);
       setShowTextInput(true);
       return;
     }
-
-    if (currentTool === "image") {
-      imageInputRef.current.click();
-      return;
-    }
-
     setIsDrawing(true);
-    setStartPos({ x, y });
-    if (currentTool === "pen" || currentTool === "eraser") {
-      setCurrentPoints([{ x, y }]);
-    }
+    setStartPos(pos);
+    if (currentTool === "pen" || currentTool === "eraser") setCurrentPoints([pos]);
   };
 
   const draw = (e) => {
     if (!isDrawing) return;
-    const { x, y } = getCursorPosition(e);
-    const ctx = ctxRef.current;
-
+    const pos = getCursorPosition(e);
     if (currentTool === "pen" || currentTool === "eraser") {
-      const newPoints = [...currentPoints, { x, y }];
+      const newPoints = [...currentPoints, pos];
       setCurrentPoints(newPoints);
-
-      const tempLine = {
+      drawAll();
+      drawLine(ctxRef.current, {
         tool: currentTool,
-        color: currentTool === "eraser" ? "#ffffff" : color,
+        color: currentTool === "eraser" ? "#fff" : color,
         size: currentTool === "eraser" ? brushSize * 4 : brushSize,
         points: newPoints,
-      };
-      drawLine(ctx, tempLine);
-    } else {
-      const canvas = canvasRef.current;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      lines.forEach((line) => drawLine(ctx, line));
-      const tempLine = { tool: currentTool, color, size: brushSize, start: startPos, end: { x, y } };
-      drawLine(ctx, tempLine);
+      });
+    } else if (["line", "rectangle", "circle"].includes(currentTool)) {
+      setTempShape({ tool: currentTool, color, size: brushSize, start: startPos, end: pos });
     }
   };
 
   const stopDrawing = () => {
     if (!isDrawing) return;
     setIsDrawing(false);
-
     if (currentTool === "pen" || currentTool === "eraser") {
-      const newLine = {
+      saveLine({
         tool: currentTool,
-        color: currentTool === "eraser" ? "#ffffff" : color,
+        color: currentTool === "eraser" ? "#fff" : color,
         size: currentTool === "eraser" ? brushSize * 4 : brushSize,
         points: currentPoints,
-      };
-      saveLine(newLine);
+      });
       setCurrentPoints([]);
-    } else if (currentTool !== "text" && currentTool !== "image") {
-      const newLine = { tool: currentTool, color, size: brushSize, start: startPos, end: startPos };
-      saveLine(newLine);
+    } else if (["line", "rectangle", "circle"].includes(currentTool)) {
+      saveLine(tempShape);
+      setTempShape(null);
     }
-
     setStartPos(null);
   };
 
-  // Save line to Firebase & push to undo stack
-  const saveLine = (newLine) => {
-    const key = Date.now();
-    const linesRef = ref(db, `rooms/${roomId}/lines/${key}`);
-    set(linesRef, newLine);
-    setUndoStack((prev) => [...prev, { key, line: newLine }]);
-    setRedoStack([]); // Clear redo stack on new action
+  const saveLine = (line) => {
+    if (!line) return;
+    set(ref(db, `rooms/${roomId}/lines/${Date.now()}`), line);
   };
 
-  // Clear board
   const clearBoard = () => {
     set(ref(db, `rooms/${roomId}/lines`), {});
-    setUndoStack([]);
-    setRedoStack([]);
+    setCanvasImages([]);
   };
 
-  // Handle Image Upload
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onload = (event) => {
       const imgObj = {
-        tool: "image",
+        id: Date.now(),
         src: event.target.result,
-        x: 50,
-        y: 50,
+        x: 100,
+        y: 100,
         width: 200,
         height: 200,
+        tool: "image",
       };
+      setCanvasImages((prev) => [...prev, imgObj]);
       saveLine(imgObj);
     };
     reader.readAsDataURL(file);
     e.target.value = "";
   };
 
-  // Undo action
-  const handleUndo = () => {
-    if (undoStack.length === 0) return;
-    const lastAction = undoStack[undoStack.length - 1];
-    setUndoStack(undoStack.slice(0, -1));
-    setRedoStack((prev) => [...prev, lastAction]);
-    set(ref(db, `rooms/${roomId}/lines/${lastAction.key}`), null);
-  };
-
-  // Redo action
-  const handleRedo = () => {
-    if (redoStack.length === 0) return;
-    const lastUndone = redoStack[redoStack.length - 1];
-    setRedoStack(redoStack.slice(0, -1));
-    setUndoStack((prev) => [...prev, lastUndone]);
-    const linesRef = ref(db, `rooms/${roomId}/lines/${lastUndone.key}`);
-    set(linesRef, lastUndone.line);
+  const updateImage = (imgId, newProps) => {
+    setCanvasImages((prev) =>
+      prev.map((img) => (img.id === imgId ? { ...img, ...newProps } : img))
+    );
+    // Optional: save to Firebase only after drag/resize is finished
   };
 
   return (
     <div style={styles.wrapper}>
       {/* Toolbar */}
       <div style={styles.toolbar}>
-        <h3 style={styles.title}>🎨 Tools</h3>
-        <div style={styles.toolsContainer}>
-          <button onClick={handleUndo} style={styles.toolButton}>↩️ Undo</button>
-          <button onClick={handleRedo} style={styles.toolButton}>↪️ Redo</button>
-          {["pen", "eraser", "line", "rectangle", "circle", "text"].map((tool) => (
-            <button
-              key={tool}
-              onClick={() => setCurrentTool(tool)}
-              style={{
-                ...styles.toolButton,
-                backgroundColor: currentTool === tool ? "#007bff" : "#f9f9f9",
-                color: currentTool === tool ? "#fff" : "#333",
-              }}
-            >
-              {tool}
-            </button>
-          ))}
+        {["pen", "eraser", "line", "rectangle", "circle", "text"].map((tool) => (
           <button
-            onClick={() => imageInputRef.current && imageInputRef.current.click()}
+            key={tool}
+            onClick={() => setCurrentTool(tool)}
             style={{
               ...styles.toolButton,
-              backgroundColor: currentTool === "image" ? "#007bff" : "#f9f9f9",
-              color: currentTool === "image" ? "#fff" : "#333",
+              backgroundColor: currentTool === tool ? "#007bff" : "#f9f9f9",
+              color: currentTool === tool ? "#fff" : "#333",
             }}
           >
-            🖼️ Image
+            {tool.toUpperCase()}
           </button>
-          <button onClick={clearBoard} style={styles.clearButton}>
-            🧹 Clear
-          </button>
-        </div>
+        ))}
+        <button onClick={() => imageInputRef.current.click()} style={styles.toolButton}>
+          IMAGE
+        </button>
+        <button onClick={clearBoard} style={styles.clearButton}>
+          CLEAR
+        </button>
       </div>
 
       {/* Canvas */}
@@ -272,110 +231,62 @@ export default function Whiteboard({ roomId, color, brushSize }) {
         onMouseLeave={stopDrawing}
       />
 
-      {/* Text input popup */}
+      {/* Text input */}
       {showTextInput && (
-        <div
+        <input
+          type="text"
+          autoFocus
+          value={inputText}
           style={{
             position: "absolute",
-            left: textPos.x + 20,
-            top: textPos.y + 120,
-            background: "white",
-            padding: "6px",
+            left: textPos.x,
+            top: textPos.y,
+            fontSize: brushSize * 5,
             border: "1px solid #ccc",
-            borderRadius: "6px",
-            zIndex: 10,
+            outline: "none",
           }}
-        >
-          <input
-            type="text"
-            autoFocus
-            value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && inputText.trim() !== "") {
-                const newLine = {
-                  tool: "text",
-                  color,
-                  size: brushSize,
-                  start: textPos,
-                  text: inputText.trim(),
-                };
-                saveLine(newLine);
-                setShowTextInput(false);
-                setInputText("");
-              }
-            }}
-            placeholder="Type and press Enter"
-            style={{ border: "none", outline: "none" }}
-          />
-        </div>
+          onChange={(e) => setInputText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && inputText.trim()) {
+              const newLine = { tool: "text", color, size: brushSize, start: textPos, text: inputText.trim() };
+              saveLine(newLine);
+              setInputText("");
+              setShowTextInput(false);
+            }
+          }}
+        />
       )}
 
-      {/* Hidden image input */}
-      <input
-        type="file"
-        ref={imageInputRef}
-        accept="image/*"
-        onChange={handleImageUpload}
-        style={{ display: "none" }}
-      />
+      {/* Hidden file input */}
+      <input type="file" ref={imageInputRef} style={{ display: "none" }} onChange={handleImageUpload} />
+
+      {/* Images */}
+      {canvasImages.map((img) => (
+        <Draggable
+          key={img.id}
+          position={{ x: img.x, y: img.y }}
+          onStop={(e, data) => updateImage(img.id, { x: data.x, y: data.y })}
+        >
+          <ResizableBox
+            width={img.width}
+            height={img.height}
+            resizeHandles={["se"]}
+            minConstraints={[50, 50]}
+            maxConstraints={[600, 600]}
+            onResizeStop={(e, { size }) => updateImage(img.id, { width: size.width, height: size.height })}
+          >
+            <img src={img.src} alt="canvas-img" style={{ width: "100%", height: "100%", cursor: "move" }} />
+          </ResizableBox>
+        </Draggable>
+      ))}
     </div>
   );
 }
 
-// Styles
 const styles = {
-  wrapper: {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    background: "#f8f9fa",
-    height: "100%",
-    paddingTop: "15px",
-    position: "relative",
-  },
-  toolbar: {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    background: "#ffffff",
-    borderRadius: "12px",
-    padding: "10px 20px",
-    boxShadow: "0 2px 6px rgba(0,0,0,0.1)",
-    marginBottom: "15px",
-  },
-  title: {
-    margin: "5px 0 10px 0",
-    fontWeight: "600",
-    color: "#333",
-  },
-  toolsContainer: {
-    display: "flex",
-    gap: "10px",
-    flexWrap: "wrap",
-    justifyContent: "center",
-  },
-  toolButton: {
-    padding: "8px 14px",
-    border: "1px solid #ccc",
-    borderRadius: "8px",
-    cursor: "pointer",
-    fontSize: "14px",
-    transition: "all 0.2s",
-  },
-  clearButton: {
-    padding: "8px 14px",
-    backgroundColor: "#dc3545",
-    color: "#fff",
-    border: "none",
-    borderRadius: "8px",
-    cursor: "pointer",
-  },
-  canvas: {
-    border: "3px solid #333",
-    borderRadius: "10px",
-    background: "#fff",
-    boxShadow: "0 3px 8px rgba(0,0,0,0.1)",
-    cursor: "crosshair",
-  },
+  wrapper: { display: "flex", flexDirection: "column", alignItems: "center", position: "relative" },
+  toolbar: { display: "flex", gap: "10px", marginBottom: "10px", flexWrap: "wrap" },
+  toolButton: { padding: "6px 12px", borderRadius: "6px", border: "1px solid #ccc", cursor: "pointer" },
+  clearButton: { padding: "6px 12px", borderRadius: "6px", border: "none", background: "#dc3545", color: "#fff", cursor: "pointer" },
+  canvas: { border: "2px solid #333", borderRadius: "8px", background: "#fff" },
 };
